@@ -268,8 +268,11 @@ backfill_status_t DCPBackfillMemoryBuffered::scan(std::string scanType) {
         return backfill_finished;
     }
 
-    if (scanType.compare("rangeItr")) {
+
+    if (scanType == "rangeItr") {
+        LOG(EXTENSION_LOG_WARNING, "Using rangeItr.count()");
         size_t numPredicted = rangeItr.count();
+        stream->incrBackfillRemaining(numPredicted);
         /* Read items */
         std::vector<UniqueItemPtr> items;
         for(;static_cast<uint64_t>(rangeItr.curr()) <= endSeqno; ++rangeItr) {
@@ -279,7 +282,6 @@ backfill_status_t DCPBackfillMemoryBuffered::scan(std::string scanType) {
         if (numPredicted != items.size()) {
             LOG(EXTENSION_LOG_WARNING, "vb %" PRIu16 ": numPredicted != items.size()", getVBucketId());
         }
-        stream->incrBackfillRemaining(numPredicted);
         stream->markDiskSnapshot(startSeqno, endSeqno);
 
         for (auto& item : items) {

@@ -132,7 +132,7 @@ backfill_status_t DCPBackfillMemoryBuffered::run() {
     case BackfillState::Init:
         return create(*evb);
     case BackfillState::Scanning:
-        return scan();
+        return scan(*evb);
     case BackfillState::Done:
         return backfill_finished;
     }
@@ -203,7 +203,7 @@ backfill_status_t DCPBackfillMemoryBuffered::create(EphemeralVBucket& evb) {
             transitionState(BackfillState::Scanning);
 
             /* Jump to scan here itself */
-            return scan();
+            return scan(evb);
         }
         ++rangeItr;
     }
@@ -213,7 +213,7 @@ backfill_status_t DCPBackfillMemoryBuffered::create(EphemeralVBucket& evb) {
     return backfill_success;
 }
 
-backfill_status_t DCPBackfillMemoryBuffered::scan() {
+backfill_status_t DCPBackfillMemoryBuffered::scan(EphemeralVBucket& evb) {
     if (!(stream->isActive())) {
         /* Stop prematurely if the stream state changes */
         complete(true);
@@ -223,6 +223,18 @@ backfill_status_t DCPBackfillMemoryBuffered::scan() {
     /* Read items */
     UniqueItemPtr item;
     while (static_cast<uint64_t>(rangeItr.curr()) <= endSeqno) {
+        auto& osv = *rangeItr;
+        StoredValue* replacement;
+        {
+            std::lock_guard<std::mutex> writeGuard(evb.getSeqListWriteLock());
+            replacement = osv.getReplacementIfStale(writeGuard);
+        }
+
+        if (replacement &&
+                    replacement->toOrderedStoredValue()->getBySeqno() <= endSeqno) {
+                    ++rangeItr;
+                    continue;
+                }
         try {
             item = (*rangeItr).toItem(false, getVBucketId());
         } catch (const std::bad_alloc&) {

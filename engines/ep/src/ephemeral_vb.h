@@ -168,6 +168,10 @@ public:
      */
     void scheduleDeferredDeletion(EventuallyPersistentEngine& engine) override;
 
+    std::mutex& getSeqListWriteLock() {
+        return seqList->getListWriteLock();
+    }
+
 protected:
     /* Data structure for in-memory sequential storage */
     std::unique_ptr<SequenceList> seqList;

@@ -45,20 +45,20 @@ backfill_status_t DCPBackfillMemory::run() {
         return backfill_finished;
     }
 
-    /* Get vb state lock */
-    ReaderLockHolder rlh(evb->getStateLock());
-    if (evb->getState() == vbucket_state_dead) {
-        /* We don't have to close the stream here. Task doing vbucket state
-           change should handle stream closure */
-        LOG(EXTENSION_LOG_WARNING,
-            "DCPBackfillMemory::run(): "
-            "(vb:%d) running backfill ended prematurely with vb in dead state; "
-            "start seqno:%" PRIi64 ", end seqno:%" PRIi64,
-            getVBucketId(),
-            startSeqno,
-            endSeqno);
-        return backfill_finished;
-    }
+///* Get vb state lock */
+//    ReaderLockHolder rlh(evb->getStateLock());
+//    if (evb->getState() == vbucket_state_dead) {
+//        /* We don't have to close the stream here. Task doing vbucket state
+//           change should handle stream closure */
+//        LOG(EXTENSION_LOG_WARNING,
+//            "DCPBackfillMemory::run(): "
+//            "(vb:%d) running backfill ended prematurely with vb in dead state; "
+//            "start seqno:%" PRIi64 ", end seqno:%" PRIi64,
+//            getVBucketId(),
+//            startSeqno,
+//            endSeqno);
+//        return backfill_finished;
+//    }
 
     /* Get sequence of items (backfill) from memory */
     ENGINE_ERROR_CODE status;
@@ -66,6 +66,16 @@ backfill_status_t DCPBackfillMemory::run() {
     seqno_t adjustedEndSeqno;
     std::tie(status, items, adjustedEndSeqno) =
             evb->inMemoryBackfill(startSeqno, endSeqno);
+
+    if (status == ENGINE_EBUSY) {
+        stream->getLogger().log(
+                            EXTENSION_LOG_WARNING,
+                            "vb:%" PRIu16
+                            " Deferring backfill creation as another "
+                            "range iterator is already on the sequence list",
+                            getVBucketId());
+        return backfill_snooze;
+    }
 
     /* Handle any failures */
     if (status != ENGINE_SUCCESS) {
@@ -128,6 +138,21 @@ backfill_status_t DCPBackfillMemoryBuffered::run() {
         return backfill_finished;
     }
 
+    /* Get vb state lock */
+        ReaderLockHolder rlh(evb->getStateLock());
+        if (evb->getState() == vbucket_state_dead) {
+            /* We don't have to close the stream here. Task doing vbucket state
+               change should handle stream closure */
+            LOG(EXTENSION_LOG_WARNING,
+                "DCPBackfillMemory::run(): "
+                "(vb:%d) running backfill ended prematurely with vb in dead state; "
+                "start seqno:%" PRIi64 ", end seqno:%" PRIi64,
+                getVBucketId(),
+                startSeqno,
+                endSeqno);
+            return backfill_finished;
+        }
+
     switch (state) {
     case BackfillState::Init:
         return create(*evb);
@@ -151,17 +176,11 @@ backfill_status_t DCPBackfillMemoryBuffered::create(EphemeralVBucket& evb) {
     /* Create range read cursor */
     try {
         auto rangeItrOptional = evb.makeRangeIterator(true /*isBackfill*/);
-        if (rangeItrOptional) {
-            rangeItr = std::move(*rangeItrOptional);
-        } else {
-            stream->getLogger().log(
-                    EXTENSION_LOG_WARNING,
-                    "vb:%" PRIu16
-                    " Deferring backfill creation as another "
-                    "range iterator is already on the sequence list",
-                    getVBucketId());
-            return backfill_snooze;
+        while (!rangeItrOptional) {
+            rangeItrOptional = evb.makeRangeIterator(true /*isBackfill*/);
         }
+        rangeItr = std::move(*rangeItrOptional);
+
     } catch (const std::bad_alloc&) {
         stream->getLogger().log(
                 EXTENSION_LOG_WARNING,
@@ -223,6 +242,11 @@ backfill_status_t DCPBackfillMemoryBuffered::scan() {
     /* Read items */
     UniqueItemPtr item;
     while (static_cast<uint64_t>(rangeItr.curr()) <= endSeqno) {
+        if (rangeItr.curr() > endSeqno || rangeItr.curr() < 0) {
+                    /* We have read all the items in the requested range, or the osv
+                     * does not yet have a valid seqno; either way we are done */
+                    break;
+                }
         try {
             item = (*rangeItr).toItem(false, getVBucketId());
         } catch (const std::bad_alloc&) {
@@ -240,7 +264,7 @@ backfill_status_t DCPBackfillMemoryBuffered::scan() {
 
         int64_t seqnoDbg = item->getBySeqno();
         if (!stream->backfillReceived(
-                    std::move(item), BACKFILL_FROM_MEMORY, /*force*/ false)) {
+                    std::move(item), BACKFILL_FROM_MEMORY, /*force*/ true)) {
             /* Try backfill again later; here we do not snooze because we
                want to check if other backfills can be run by the
                backfillMgr */
@@ -258,7 +282,7 @@ backfill_status_t DCPBackfillMemoryBuffered::scan() {
     /* Backfill has ran to completion */
     complete(false);
 
-    return backfill_success;
+    return backfill_finished;
 }
 
 void DCPBackfillMemoryBuffered::complete(bool cancelled) {

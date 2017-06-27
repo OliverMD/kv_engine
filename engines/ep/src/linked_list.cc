@@ -20,6 +20,7 @@
 #include "stats.h"
 
 #include <mutex>
+#include <algorithm>
 
 BasicLinkedList::BasicLinkedList(uint16_t vbucketId, EPStats& st)
     : SequenceList(),
@@ -93,68 +94,103 @@ BasicLinkedList::rangeRead(seqno_t start, seqno_t end) {
         return std::make_tuple(ENGINE_ERANGE, std::vector<UniqueItemPtr>(), 0);
     }
 
-    /* Allows only 1 rangeRead for now */
-    std::lock_guard<std::mutex> lckGd(rangeReadLock);
+//    // --- To REMOVE ---
+//    /* Allows only 1 rangeRead for now */
+//    std::lock_guard<std::mutex> lckGd(rangeReadLock);
+//
+//    {
+//        std::lock_guard<std::mutex> listWriteLg(getListWriteLock());
+//        std::lock_guard<SpinLock> lh(rangeLock);
+//        if (start > highSeqno) {
+//            LOG(EXTENSION_LOG_WARNING,
+//                "BasicLinkedList::rangeRead(): "
+//                "(vb:%d) ERANGE: start %" PRIi64 " > highSeqno %" PRIi64,
+//                vbid,
+//                start,
+//                static_cast<seqno_t>(highSeqno));
+//            /* If the request is for an invalid range, return before iterating
+//               through the list */
+//            return std::make_tuple(
+//                    ENGINE_ERANGE, std::vector<UniqueItemPtr>(), 0);
+//        }
+//
+//        /* Mark the initial read range */
+//        end = std::min(end, static_cast<seqno_t>(highSeqno));
+//        end = std::max(end, static_cast<seqno_t>(highestDedupedSeqno));
+//        readRange = SeqRange(1, end);
+//    }
+//
+//    // --- END
+//
+//    if (start > highSeqno) {
+//                LOG(EXTENSION_LOG_WARNING,
+//                    "BasicLinkedList::rangeRead(): "
+//                    "(vb:%d) ERANGE: start %" PRIi64 " > highSeqno %" PRIi64,
+//                    vbid,
+//                    start,
+//                    static_cast<seqno_t>(highSeqno));
+//                /* If the request is for an invalid range, return before iterating
+//                   through the list */
+//                return std::make_tuple(
+//                        ENGINE_ERANGE, std::vector<UniqueItemPtr>(), 0);
+//            }
 
-    {
-        std::lock_guard<std::mutex> listWriteLg(getListWriteLock());
-        std::lock_guard<SpinLock> lh(rangeLock);
-        if (start > highSeqno) {
-            LOG(EXTENSION_LOG_WARNING,
-                "BasicLinkedList::rangeRead(): "
-                "(vb:%d) ERANGE: start %" PRIi64 " > highSeqno %" PRIi64,
-                vbid,
-                start,
-                static_cast<seqno_t>(highSeqno));
-            /* If the request is for an invalid range, return before iterating
-               through the list */
-            return std::make_tuple(
-                    ENGINE_ERANGE, std::vector<UniqueItemPtr>(), 0);
-        }
+    auto rangeItrOptional = makeRangeIterator(true);
+    if (!rangeItrOptional) {
+        return std::make_tuple(ENGINE_EBUSY, std::vector<UniqueItemPtr>(), 0);
+    }
 
-        /* Mark the initial read range */
-        end = std::min(end, static_cast<seqno_t>(highSeqno));
-        end = std::max(end, static_cast<seqno_t>(highestDedupedSeqno));
-        readRange = SeqRange(1, end);
+    auto& rangeItr = *rangeItrOptional;
+
+    seqno_t endSeqno;
+    bool loopDone = false;
+    while (rangeItr.curr() != rangeItr.end()) {
+           if (static_cast<uint64_t>((*rangeItr).getBySeqno()) >= start) {
+
+            /* Determine the endSeqno of the current snapshot.
+            We want to send till requested endSeqno, but if that cannot
+            constitute a snapshot then we need to send till the point
+            which can be called as snapshot end */
+            endSeqno = std::max(end, rangeItr.getEarlySnapShotEnd());
+
+            /* We want to send items only till the point it is necessary to do
+            so */
+            endSeqno = std::min(endSeqno, rangeItr.back());
+            loopDone = true;
+            break;
+           }
+    }
+
+    if (!loopDone) {
+        return std::make_tuple(ENGINE_SUCCESS, std::vector<UniqueItemPtr>(), endSeqno);
     }
 
     /* Read items in the range */
     std::vector<UniqueItemPtr> items;
 
-    for (const auto& osv : seqList) {
+    for (;static_cast<uint64_t>(rangeItr.curr()) <= endSeqno; ++rangeItr) {
+        const auto& osv = *rangeItr;
         int64_t currSeqno(osv.getBySeqno());
 
-        if (currSeqno > end || currSeqno < 0) {
-            /* We have read all the items in the requested range, or the osv
-             * does not yet have a valid seqno; either way we are done */
-            break;
-        }
-
-        {
-            std::lock_guard<SpinLock> lh(rangeLock);
-            readRange.setBegin(currSeqno); /* [EPHE TODO]: should we
-                                                     update the min every time ?
-                                                   */
-        }
-
-        if (currSeqno < start) {
-            /* skip this item */
-            continue;
-        }
+//        if (currSeqno > endSeqno || currSeqno < 0) {
+//            /* We have read all the items in the requested range, or the osv
+//             * does not yet have a valid seqno; either way we are done */
+//            break;
+//        }
 
         /* Check if this OSV has been made stale and has been superseded by a
          * newer version. If it has, and the replacement is /also/ in the range
          * we are reading, we should skip this item to avoid duplicates */
-        StoredValue* replacement;
-        {
-            std::lock_guard<std::mutex> writeGuard(getListWriteLock());
-            replacement = osv.getReplacementIfStale(writeGuard);
-        }
-
-        if (replacement &&
-            replacement->toOrderedStoredValue()->getBySeqno() <= end) {
-            continue;
-        }
+//        StoredValue* replacement;
+//        {
+//            std::lock_guard<std::mutex> writeGuard(getListWriteLock());
+//            replacement = osv.getReplacementIfStale(writeGuard);
+//        }
+//
+//        if (replacement &&
+//            replacement->toOrderedStoredValue()->getBySeqno() <= endSeqno) {
+//            continue;
+//        }
 
         try {
             items.push_back(UniqueItemPtr(osv.toItem(false, vbid)));
@@ -174,14 +210,8 @@ BasicLinkedList::rangeRead(seqno_t start, seqno_t end) {
         }
     }
 
-    /* Done with range read, reset the range */
-    {
-        std::lock_guard<SpinLock> lh(rangeLock);
-        readRange.reset();
-    }
-
     /* Return all the range read items */
-    return std::make_tuple(ENGINE_SUCCESS, std::move(items), end);
+    return std::make_tuple(ENGINE_SUCCESS, std::move(items), endSeqno);
 }
 
 void BasicLinkedList::updateHighSeqno(std::lock_guard<std::mutex>& listWriteLg,

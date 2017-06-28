@@ -264,7 +264,7 @@ backfill_status_t DCPBackfillMemoryBuffered::scan() {
 
         int64_t seqnoDbg = item->getBySeqno();
         if (!stream->backfillReceived(
-                    std::move(item), BACKFILL_FROM_MEMORY, /*force*/ true)) {
+                    std::move(item), BACKFILL_FROM_MEMORY, /*force*/ false)) {
             /* Try backfill again later; here we do not snooze because we
                want to check if other backfills can be run by the
                backfillMgr */

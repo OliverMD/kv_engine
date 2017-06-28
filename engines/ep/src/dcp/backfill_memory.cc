@@ -103,7 +103,7 @@ backfill_status_t DCPBackfillMemory::run() {
     /* Move every item to the stream */
     for (auto& item : items) {
         stream->backfillReceived(
-                std::move(item), BACKFILL_FROM_MEMORY, /*force*/ true);
+                std::move(item), BACKFILL_FROM_MEMORY, /*force*/ false);
     }
 
     /* Indicate completion to the stream */
@@ -240,43 +240,13 @@ backfill_status_t DCPBackfillMemoryBuffered::scan() {
     }
 
     /* Read items */
-    UniqueItemPtr item;
-    while (static_cast<uint64_t>(rangeItr.curr()) <= endSeqno) {
+    for (;static_cast<uint64_t>(rangeItr.curr()) <= endSeqno;++rangeItr) {
         if (rangeItr.curr() > endSeqno || rangeItr.curr() < 0) {
                     /* We have read all the items in the requested range, or the osv
                      * does not yet have a valid seqno; either way we are done */
                     break;
                 }
-        try {
-            item = (*rangeItr).toItem(false, getVBucketId());
-        } catch (const std::bad_alloc&) {
-            stream->getLogger().log(
-                    EXTENSION_LOG_WARNING,
-                    "Alloc error when trying to create an "
-                    "item copy from hash table. Item seqno:%" PRIi64
-                    ", vb:%" PRIu16,
-                    (*rangeItr).getBySeqno(),
-                    getVBucketId());
-            /* Try backfilling again later; here we snooze because system has
-               hit ENOMEM */
-            return backfill_snooze;
-        }
-
-        int64_t seqnoDbg = item->getBySeqno();
-        if (!stream->backfillReceived(
-                    std::move(item), BACKFILL_FROM_MEMORY, /*force*/ false)) {
-            /* Try backfill again later; here we do not snooze because we
-               want to check if other backfills can be run by the
-               backfillMgr */
-            stream->getLogger().log(EXTENSION_LOG_WARNING,
-                                    "vb:%" PRIu16
-                                    " Deferring backfill at seqno:%" PRIi64
-                                    "as scan buffer or backfill buffer is full",
-                                    getVBucketId(),
-                                    seqnoDbg);
-            return backfill_success;
-        }
-        ++rangeItr;
+        stream->backfillReceived((*rangeItr).toItem(false, getVBucketId()), BACKFILL_FROM_MEMORY, /*force*/ true);
     }
 
     /* Backfill has ran to completion */

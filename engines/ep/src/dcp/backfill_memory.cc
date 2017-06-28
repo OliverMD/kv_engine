@@ -45,60 +45,75 @@ backfill_status_t DCPBackfillMemory::run() {
         return backfill_finished;
     }
 
-///* Get vb state lock */
-//    ReaderLockHolder rlh(evb->getStateLock());
-//    if (evb->getState() == vbucket_state_dead) {
-//        /* We don't have to close the stream here. Task doing vbucket state
-//           change should handle stream closure */
-//        LOG(EXTENSION_LOG_WARNING,
-//            "DCPBackfillMemory::run(): "
-//            "(vb:%d) running backfill ended prematurely with vb in dead state; "
-//            "start seqno:%" PRIi64 ", end seqno:%" PRIi64,
-//            getVBucketId(),
-//            startSeqno,
-//            endSeqno);
-//        return backfill_finished;
-//    }
-
-    /* Get sequence of items (backfill) from memory */
-    ENGINE_ERROR_CODE status;
     std::vector<UniqueItemPtr> items;
-    seqno_t adjustedEndSeqno;
-    std::tie(status, items, adjustedEndSeqno) =
-            evb->inMemoryBackfill(startSeqno, endSeqno);
-
-    if (status == ENGINE_EBUSY) {
+    SequenceList::RangeIterator rangeItr{nullptr};
+    try {
+        auto rangeItrOptional = evb->makeRangeIterator(true);
+        while (!rangeItrOptional) {
+            rangeItrOptional = evb->makeRangeIterator(true);
+        }
+        rangeItr = std::move(*rangeItrOptional);
+    } catch (const std::bad_alloc&) {
         stream->getLogger().log(
-                            EXTENSION_LOG_WARNING,
-                            "vb:%" PRIu16
-                            " Deferring backfill creation as another "
-                            "range iterator is already on the sequence list",
-                            getVBucketId());
+                EXTENSION_LOG_WARNING,
+                "Alloc error when trying to create a range iterator"
+                "on the sequence list for (vb %" PRIu16 ")",
+                getVBucketId());
+        /* Try backfilling again later; here we snooze because system has
+           hit ENOMEM */
         return backfill_snooze;
     }
 
-    /* Handle any failures */
-    if (status != ENGINE_SUCCESS) {
-        LOG(EXTENSION_LOG_WARNING,
-            "DCPBackfillMemory::run(): "
-            "(vb:%d) running backfill failed with error %d ; "
-            "start seqno:%" PRIi64 ", end seqno:%" PRIi64
-            ". "
-            "Hence closing the stream",
-            getVBucketId(),
-            status,
-            startSeqno,
-            endSeqno);
-        /* Close the stream, DCP clients can retry */
-        stream->setDead(END_STREAM_BACKFILL_FAIL);
+    seqno_t endSeqno;
+    bool loopDone = false;
+    while (rangeItr.curr() != rangeItr.end()) {
+        if (static_cast<uint64_t>((*rangeItr).getBySeqno()) >= startSeqno) {
+            /* Determine the endSeqno of the current snapshot.
+            We want to send till requested endSeqno, but if that cannot
+            constitute a snapshot then we need to send till the point
+            which can be called as snapshot end */
+            endSeqno = std::max(endSeqno, rangeItr.getEarlySnapShotEnd());
+
+            /* We want to send items only till the point it is necessary to do
+            so */
+            endSeqno = std::min(endSeqno, rangeItr.back());
+            loopDone = true;
+            break;
+        }
+    }
+
+    if (!loopDone) {
+        stream->completeBackfill();
+
         return backfill_finished;
+    }
+
+    for (; static_cast<uint64_t>(rangeItr.curr()) <= endSeqno; ++rangeItr) {
+        const auto& osv = *rangeItr;
+        int64_t currSeqno(osv.getBySeqno());
+
+        try {
+            items.push_back(UniqueItemPtr(osv.toItem(false, getVBucketId())));
+        } catch (const std::bad_alloc&) {
+            /* [EPHE TODO]: Do we handle backfill in a better way ?
+                            Perhaps do backfilling partially (that is
+                            backfill ==> stream; backfill ==> stream ..so on )?
+             */
+            stream->getLogger().log(
+                    EXTENSION_LOG_WARNING,
+                    "vb:%" PRIu16
+                    " Deferring backfill creation as another "
+                    "range iterator is already on the sequence list",
+                    getVBucketId());
+            return backfill_snooze;
+        }
     }
 
     /* Put items onto readyQ of the DCP stream */
     stream->incrBackfillRemaining(items.size());
 
     /* Mark disk snapshot */
-    stream->markDiskSnapshot(startSeqno, adjustedEndSeqno);
+    stream->markDiskSnapshot(startSeqno, endSeqno);
 
     /* Move every item to the stream */
     for (auto& item : items) {
@@ -153,17 +168,97 @@ backfill_status_t DCPBackfillMemoryBuffered::run() {
             return backfill_finished;
         }
 
-    switch (state) {
-    case BackfillState::Init:
-        return create(*evb);
-    case BackfillState::Scanning:
-        return scan();
-    case BackfillState::Done:
-        return backfill_finished;
-    }
+        try {
+            auto rangeItrOptional = evb->makeRangeIterator(true /*isBackfill*/);
+            while (!rangeItrOptional) {
+                rangeItrOptional = evb->makeRangeIterator(true /*isBackfill*/);
+            }
+            rangeItr = std::move(*rangeItrOptional);
 
-    throw std::logic_error("DCPBackfillDisk::run: Invalid backfill state " +
-                           backfillStateToString(state));
+        } catch (const std::bad_alloc&) {
+            stream->getLogger().log(
+                    EXTENSION_LOG_WARNING,
+                    "Alloc error when trying to create a range iterator"
+                    "on the sequence list for (vb %" PRIu16 ")",
+                    getVBucketId());
+            /* Try backfilling again later; here we snooze because system has
+               hit ENOMEM */
+            return backfill_snooze;
+        }
+
+        /* Advance the cursor till start, mark snapshot and update backfill
+           remaining count */
+        while (rangeItr.curr() != rangeItr.end()) {
+            if (static_cast<uint64_t>((*rangeItr).getBySeqno()) >= startSeqno) {
+                /* Incr backfill remaining
+                   [EPHE TODO]: This will be inaccurate if do not backfill till
+                   end
+                                of the iterator
+                 */
+                stream->incrBackfillRemaining(rangeItr.count());
+
+                /* Determine the endSeqno of the current snapshot.
+                   We want to send till requested endSeqno, but if that cannot
+                   constitute a snapshot then we need to send till the point
+                   which can be called as snapshot end */
+                endSeqno = std::max(
+                        endSeqno,
+                        static_cast<uint64_t>(rangeItr.getEarlySnapShotEnd()));
+
+                /* We want to send items only till the point it is necessary to
+                   do
+                   so */
+                endSeqno = std::min(endSeqno,
+                                    static_cast<uint64_t>(rangeItr.back()));
+
+                /* Mark disk snapshot */
+                stream->markDiskSnapshot(startSeqno, endSeqno);
+
+                /* Jump to scan here itself */
+                if (!(stream->isActive())) {
+                    /* Stop prematurely if the stream state changes */
+                    complete(true);
+                    return backfill_success;
+                }
+
+                /* Read items */
+                for (; static_cast<uint64_t>(rangeItr.curr()) <= endSeqno;
+                     ++rangeItr) {
+                    if (rangeItr.curr() > endSeqno || rangeItr.curr() < 0) {
+                        /* We have read all the items in the requested range, or
+                         * the osv
+                         * does not yet have a valid seqno; either way we are
+                         * done */
+                        break;
+                    }
+                    stream->backfillReceived(
+                            (*rangeItr).toItem(false, getVBucketId()),
+                            BACKFILL_FROM_MEMORY,
+                            /*force*/ true);
+                }
+
+                /* Backfill has ran to completion */
+                complete(false);
+
+                return backfill_finished;
+            }
+            ++rangeItr;
+        }
+
+        /* Backfill is not needed as startSeqno > rangeItr end seqno */
+        complete(false);
+        return backfill_success;
+        //    switch (state) {
+        //    case BackfillState::Init:
+        //        return create(*evb);
+        //    case BackfillState::Scanning:
+        //        return scan();
+        //    case BackfillState::Done:
+        //        return backfill_finished;
+        //    }
+
+        throw std::logic_error("DCPBackfillDisk::run: Invalid backfill state " +
+                               backfillStateToString(state));
 }
 
 void DCPBackfillMemoryBuffered::cancel() {

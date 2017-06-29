@@ -208,6 +208,7 @@ backfill_status_t DCPBackfillMemoryBuffered::create(EphemeralVBucket& evb) {
            [EPHE TODO]: This will be inaccurate if do not backfill till end
                         of the iterator
          */
+        stream->incrBackfillRemaining(rangeItr.count());
 
         /* Determine the endSeqno of the current snapshot.
            We want to send till requested endSeqno, but if that cannot
@@ -221,6 +222,8 @@ backfill_status_t DCPBackfillMemoryBuffered::create(EphemeralVBucket& evb) {
         endSeqno = std::max(
                 endSeqno,
                 static_cast<uint64_t>(rangeItr.getEarlySnapShotEnd()));
+
+        stream->markDiskSnapshot(startSeqno, endSeqno);
 
         /* Change the backfill state */
         transitionState(BackfillState::Scanning);
@@ -241,23 +244,41 @@ backfill_status_t DCPBackfillMemoryBuffered::scan() {
         return backfill_finished;
     }
 
-
-    std::vector<UniqueItemPtr> items;
-
-    for (;static_cast<uint64_t>(rangeItr.curr()) <= endSeqno;++rangeItr) {
-        items.push_back((*rangeItr).toItem(false, getVBucketId()));
-    }
-
-    stream->incrBackfillRemaining(items.size());
-    stream->markDiskSnapshot(startSeqno, endSeqno);
     /* Read items */
-    for (auto& item : items) {
-    stream->backfillReceived(
-                    std::move(item), BACKFILL_FROM_MEMORY, /*force*/ true);
+    UniqueItemPtr item;
+    while (static_cast<uint64_t>(rangeItr.curr()) <= endSeqno) {
+        try {
+            item = (*rangeItr).toItem(false, getVBucketId());
+        } catch (const std::bad_alloc&) {
+            stream->getLogger().log(
+                    EXTENSION_LOG_WARNING,
+                    "Alloc error when trying to create an "
+                    "item copy from hash table. Item seqno:%" PRIi64
+                    ", vb:%" PRIu16,
+                    (*rangeItr).getBySeqno(),
+                    getVBucketId());
+            /* Try backfilling again later; here we snooze because system has
+               hit ENOMEM */
+            return backfill_snooze;
+        }
+
+        int64_t seqnoDbg = item->getBySeqno();
+        if (!stream->backfillReceived(
+                    std::move(item), BACKFILL_FROM_MEMORY, /*force*/ false)) {
             /* Try backfill again later; here we do not snooze because we
                want to check if other backfills can be run by the
                backfillMgr */
+            stream->getLogger().log(EXTENSION_LOG_WARNING,
+                                    "vb:%" PRIu16
+                                    " Deferring backfill at seqno:%" PRIi64
+                                    "as scan buffer or backfill buffer is full",
+                                    getVBucketId(),
+                                    seqnoDbg);
+            return backfill_success;
+        }
+        ++rangeItr;
     }
+
 
     /* Backfill has ran to completion */
     complete(false);

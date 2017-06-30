@@ -245,9 +245,12 @@ backfill_status_t DCPBackfillMemoryBuffered::scan() {
     }
 
     /* Read items */
+    std::vector<UniqueItemPtr> items;
     for(;static_cast<uint64_t>(rangeItr.curr()) <= endSeqno; ++rangeItr) {
-        stream->backfillReceived((*rangeItr).toItem(false, getVBucketId()),
-                BACKFILL_FROM_MEMORY, /*force*/ true);
+        items.push_back((*rangeItr).toItem(false, getVBucketId()));
+    }
+    for (auto& item : items) {
+        stream->backfillReceived(std::move(item),BACKFILL_FROM_MEMORY, /*force*/ true);
     }
 
 

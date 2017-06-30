@@ -242,13 +242,13 @@ backfill_status_t DCPBackfillMemoryBuffered::scan() {
         return backfill_finished;
     }
 
+    stream->incrBackfillRemaining(rangeItr.count());
     /* Read items */
     std::vector<UniqueItemPtr> items;
     for(;static_cast<uint64_t>(rangeItr.curr()) <= endSeqno; ++rangeItr) {
         items.push_back((*rangeItr).toItem(false, getVBucketId()));
     }
 
-    stream->incrBackfillRemaining(items.size());
     stream->markDiskSnapshot(startSeqno, endSeqno);
 
     for (auto& item : items) {

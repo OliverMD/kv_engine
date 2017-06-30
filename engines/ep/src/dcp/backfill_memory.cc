@@ -242,13 +242,15 @@ backfill_status_t DCPBackfillMemoryBuffered::scan() {
         return backfill_finished;
     }
 
-    stream->incrBackfillRemaining(rangeItr.count());
+    LOG(EXTENSION_LOG_WARNING, "rangeItr.count(): %" PRIu64, rangeItr.count());
     /* Read items */
     std::vector<UniqueItemPtr> items;
     for(;static_cast<uint64_t>(rangeItr.curr()) <= endSeqno; ++rangeItr) {
         items.push_back((*rangeItr).toItem(false, getVBucketId()));
     }
 
+    stream->incrBackfillRemaining(items.size());
+    LOG(EXTENSION_LOG_WARNING, "items.size(): %" PRIu64, items.size());
     stream->markDiskSnapshot(startSeqno, endSeqno);
 
     for (auto& item : items) {

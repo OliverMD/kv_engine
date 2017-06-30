@@ -208,7 +208,6 @@ backfill_status_t DCPBackfillMemoryBuffered::create(EphemeralVBucket& evb) {
            [EPHE TODO]: This will be inaccurate if do not backfill till end
                         of the iterator
          */
-        stream->incrBackfillRemaining(rangeItr.count());
 
         /* Determine the endSeqno of the current snapshot.
            We want to send till requested endSeqno, but if that cannot
@@ -223,7 +222,6 @@ backfill_status_t DCPBackfillMemoryBuffered::create(EphemeralVBucket& evb) {
                 endSeqno,
                 static_cast<uint64_t>(rangeItr.getEarlySnapShotEnd()));
 
-        stream->markDiskSnapshot(startSeqno, endSeqno);
 
         /* Change the backfill state */
         transitionState(BackfillState::Scanning);
@@ -249,6 +247,10 @@ backfill_status_t DCPBackfillMemoryBuffered::scan() {
     for(;static_cast<uint64_t>(rangeItr.curr()) <= endSeqno; ++rangeItr) {
         items.push_back((*rangeItr).toItem(false, getVBucketId()));
     }
+
+    stream->incrBackfillRemaining(items.size());
+    stream->markDiskSnapshot(startSeqno, endSeqno);
+
     for (auto& item : items) {
         stream->backfillReceived(std::move(item),BACKFILL_FROM_MEMORY, /*force*/ true);
     }

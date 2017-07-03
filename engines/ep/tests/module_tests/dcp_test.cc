@@ -627,6 +627,42 @@ TEST_P(StreamTest, BackfillOnly) {
                items are read correctly */
 }
 
+TEST_P(StreamTest, BackfillItemsRemaining) {
+    /* Add 3 items */
+        int numItems = 3;
+        addItemsAndRemoveCheckpoint(numItems);
+
+        /* Set up a DCP stream for the backfill */
+        setup_dcp_stream();
+        MockActiveStream* mock_stream =
+                static_cast<MockActiveStream*>(stream.get());
+
+        /* We want the backfill task to run in a background thread */
+        //ExecutorPool::get()->setNumAuxIO(1);
+        mock_stream->transitionStateToBackfilling();
+        ExecutorPool::get()->setNumAuxIO(1);
+
+        std::string key = "key" + std::to_string(5);
+                store_item(vbid, key, "NewVal");
+        /* Wait for the backfill task to complete */
+        {
+            std::chrono::microseconds uSleepTime(128);
+            while (3 > mock_stream->getLastReadSeqno()) {
+                uSleepTime = decayingSleep(uSleepTime);
+            }
+        }
+
+        /* Verify that all items are read in the backfill */
+        EXPECT_EQ(3, mock_stream->getNumBackfillItems());
+
+        /* Since backfill items are sitting in the readyQ, check if the stat is
+           updated correctly */
+        EXPECT_EQ(3, mock_stream->getNumBackfillItemsRemaining());
+
+        /* [TODO]: Expand the testcase to check if snapshot marker, all individual
+                   items are read correctly */
+}
+
 /* Stream items from a DCP backfill with very small backfill buffer.
    However small the backfill buffer is, backfill must not stop, it must
    proceed to completion eventually */

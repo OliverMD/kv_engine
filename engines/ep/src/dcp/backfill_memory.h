@@ -119,6 +119,9 @@ private:
 
     BackfillState state;
 
+    size_t predictedNumItems;
+    size_t itemsActuallyRead;
+
     /**
      * Range iterator (on the vbucket) created for the backfill
      */

@@ -109,6 +109,8 @@ DCPBackfillMemoryBuffered::DCPBackfillMemoryBuffered(EphemeralVBucketPtr evb,
     : DCPBackfill(s, startSeqno, endSeqno),
       weakVb(evb),
       state(BackfillState::Init),
+      predictedNumItems{0},
+      itemsActuallyRead{0},
       rangeItr(nullptr) {
 }
 
@@ -181,7 +183,7 @@ backfill_status_t DCPBackfillMemoryBuffered::create(EphemeralVBucket& evb) {
                [EPHE TODO]: This will be inaccurate if do not backfill till end
                             of the iterator
              */
-            stream->incrBackfillRemaining(rangeItr.count());
+            predictedNumItems = rangeItr.count();
 
             /* Determine the endSeqno of the current snapshot.
                We want to send till requested endSeqno, but if that cannot
@@ -201,6 +203,9 @@ backfill_status_t DCPBackfillMemoryBuffered::create(EphemeralVBucket& evb) {
 
             /* Change the backfill state */
             transitionState(BackfillState::Scanning);
+
+            predictedNumItems = rangeItr.count();
+            stream->incrBackfillRemaining(rangeItr.count());
 
             /* Jump to scan here itself */
             return scan();
@@ -252,6 +257,7 @@ backfill_status_t DCPBackfillMemoryBuffered::scan() {
                                     seqnoDbg);
             return backfill_success;
         }
+        ++itemsActuallyRead;
         ++rangeItr;
     }
 
@@ -265,6 +271,19 @@ void DCPBackfillMemoryBuffered::complete(bool cancelled) {
     uint16_t vbid = getVBucketId();
 
     /* [EPHE TODO]: invalidate cursor sooner before it gets deleted */
+
+
+    if (predictedNumItems != itemsActuallyRead) {
+        stream->getLogger().log(EXTENSION_LOG_FATAL, "(vb %d) Backfill task (%" PRIu64 " to %" PRIu64
+                            ") difference between expected items and actual. Diff: %" PRIu64, vbid,
+                            startSeqno,
+                            endSeqno, predictedNumItems - itemsActuallyRead);
+        cb_assert(false);
+    }
+
+    if (predictedNumItems > itemsActuallyRead) {
+        stream->decrBackfillRemaining(predictedNumItems - itemsActuallyRead);
+    }
 
     stream->completeBackfill();
 

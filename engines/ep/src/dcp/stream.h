@@ -315,6 +315,14 @@ public:
         return currentSeparator;
     }
 
+    void decrBackfillRemaining(size_t diff) {
+        if ((int(backfillRemaining) - int(diff)) >= 0) {
+            backfillRemaining.fetch_sub(diff, std::memory_order_relaxed);
+        } else {
+            backfillRemaining.store(0, std::memory_order_relaxed);
+        }
+    }
+
 protected:
     // Returns the outstanding items for the stream's checkpoint cursor.
     void getOutstandingItems(VBucketPtr &vb, std::vector<queued_item> &items);

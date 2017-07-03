@@ -254,7 +254,7 @@ std::unique_ptr<DCPBackfill> EphemeralVBucket::createDCPBackfill(
         return std::make_unique<DCPBackfillMemoryBuffered>(
                 evb, stream, startSeqno, endSeqno);
     } else {
-        return std::make_unique<DCPBackfillMemory>(
+        return std::make_unique<DCPBackfillMemoryBuffered>(
                 evb, stream, startSeqno, endSeqno);
     }
 }

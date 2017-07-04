@@ -167,6 +167,7 @@ public:
      * @param engine owning engine (required for task construction)
      */
     void scheduleDeferredDeletion(EventuallyPersistentEngine& engine) override;
+    std::string myBackfillType;
 
 protected:
     /* Data structure for in-memory sequential storage */

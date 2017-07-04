@@ -66,6 +66,8 @@ EphemeralVBucket::EphemeralVBucket(id_type i,
     if (!dcpBackfillType.compare("buffered")) {
         backfillType = BackfillType::Buffered;
     }
+    std::string scanType = config.getMyBackfillType();
+    myBackfillType = scanType;
 }
 
 size_t EphemeralVBucket::getNumItems() const {

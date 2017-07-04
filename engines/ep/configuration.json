@@ -936,6 +936,17 @@
                     "min": 0
                 }
             }
+        },
+        "my_backfill_type": {
+        	"default": "",
+        	"descr": "MyBackfillType",
+        	"type": "std::string",
+        	"validator": {
+                "enum": [
+                         "rangeItr",
+                         "items"
+                         ]
+            }
         }
     }
 }

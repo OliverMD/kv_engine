@@ -96,7 +96,7 @@ private:
      * memory usage postpones the reading of items, and reading can be resumed
      * later on from that point.
      */
-    backfill_status_t scan();
+    backfill_status_t scan(std::string scanType);
 
     /**
      * Indicates the completion to the stream.

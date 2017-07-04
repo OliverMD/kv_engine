@@ -152,7 +152,7 @@ backfill_status_t DCPBackfillMemoryBuffered::run() {
     case BackfillState::Init:
         return create(*evb);
     case BackfillState::Scanning:
-        return scan();
+        return scan(evb->myBackfillType);
     case BackfillState::Done:
         return backfill_finished;
     }
@@ -227,7 +227,7 @@ backfill_status_t DCPBackfillMemoryBuffered::create(EphemeralVBucket& evb) {
         transitionState(BackfillState::Scanning);
 
         /* Jump to scan here itself */
-        return scan();
+        return scan(evb.myBackfillType);
     }
 
     /* Backfill is not needed as startSeqno > rangeItr end seqno */
@@ -235,26 +235,46 @@ backfill_status_t DCPBackfillMemoryBuffered::create(EphemeralVBucket& evb) {
     return backfill_finished;
 }
 
-backfill_status_t DCPBackfillMemoryBuffered::scan() {
+backfill_status_t DCPBackfillMemoryBuffered::scan(std::string scanType) {
     if (!(stream->isActive())) {
         /* Stop prematurely if the stream state changes */
         complete(true);
         return backfill_finished;
     }
 
-    LOG(EXTENSION_LOG_WARNING, "rangeItr.count(): %" PRIu64, rangeItr.count());
-    /* Read items */
-    std::vector<UniqueItemPtr> items;
-    for(;static_cast<uint64_t>(rangeItr.curr()) <= endSeqno; ++rangeItr) {
-        items.push_back((*rangeItr).toItem(false, getVBucketId()));
-    }
+    if (scanType.compare("rangeItr")) {
+        size_t numPredicted = rangeItr.count();
+        /* Read items */
+        std::vector<UniqueItemPtr> items;
+        for(;static_cast<uint64_t>(rangeItr.curr()) <= endSeqno; ++rangeItr) {
+            items.push_back((*rangeItr).toItem(false, getVBucketId()));
+        }
 
-    stream->incrBackfillRemaining(items.size());
-    LOG(EXTENSION_LOG_WARNING, "items.size(): %" PRIu64, items.size());
-    stream->markDiskSnapshot(startSeqno, endSeqno);
+        if (numPredicted != items.size()) {
+            LOG(EXTENSION_LOG_WARNING, "vb %" PRIu16 ": numPredicted != items.size()", getVBucketId());
+        }
+        stream->incrBackfillRemaining(numPredicted);
+        stream->markDiskSnapshot(startSeqno, endSeqno);
 
-    for (auto& item : items) {
-        stream->backfillReceived(std::move(item),BACKFILL_FROM_MEMORY, /*force*/ true);
+        for (auto& item : items) {
+            stream->backfillReceived(std::move(item),BACKFILL_FROM_MEMORY, /*force*/ true);
+        }
+    } else {
+        size_t numPredicted = rangeItr.count();
+        /* Read items */
+        std::vector<UniqueItemPtr> items;
+        for(;static_cast<uint64_t>(rangeItr.curr()) <= endSeqno; ++rangeItr) {
+            items.push_back((*rangeItr).toItem(false, getVBucketId()));
+        }
+        if (numPredicted != items.size()) {
+            LOG(EXTENSION_LOG_WARNING, "vb %" PRIu16 ": numPredicted != items.size()", getVBucketId());
+        }
+        stream->incrBackfillRemaining(items.size());
+        stream->markDiskSnapshot(startSeqno, endSeqno);
+
+        for (auto& item : items) {
+            stream->backfillReceived(std::move(item),BACKFILL_FROM_MEMORY, /*force*/ true);
+        }
     }
 
 

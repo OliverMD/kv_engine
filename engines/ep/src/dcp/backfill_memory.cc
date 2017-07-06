@@ -200,6 +200,7 @@ backfill_status_t DCPBackfillMemoryBuffered::create(EphemeralVBucket& evb) {
                [EPHE TODO]: This will be inaccurate if do not backfill till end
                             of the iterator
              */
+            sleep(1);
             stream->incrBackfillRemaining(rangeItr.count());
 
             /* Determine the endSeqno of the current snapshot.

@@ -193,6 +193,7 @@ SingleThreadedRCPtr<PassiveStream> DcpConsumer::makePassiveStream(
 
 ENGINE_ERROR_CODE DcpConsumer::addStream(uint32_t opaque, uint16_t vbucket,
                                          uint32_t flags) {
+TRACE_EVENT1("dcp/addStream", "DcpConsumer::addStream", "vbid", vbucket);
     lastMessageTime = ep_current_time();
     LockHolder lh(readyMutex);
     if (doDisconnect()) {

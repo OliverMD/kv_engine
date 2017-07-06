@@ -29,6 +29,8 @@
 #include <memcached/server_api.h>
 #include <vector>
 
+#include <phosphor/phosphor.h>
+
 const std::chrono::seconds DcpProducer::defaultDcpNoopTxInterval(20);
 
 DcpProducer::BufferLog::State DcpProducer::BufferLog::getState_UNLOCKED() {
@@ -229,6 +231,7 @@ ENGINE_ERROR_CODE DcpProducer::streamRequest(uint32_t flags,
                                              uint64_t snap_end_seqno,
                                              uint64_t *rollback_seqno,
                                              dcp_add_failover_log callback) {
+    TRACE_EVENT1("dcp/streamRequest", "DcpProducer::streamRequest", "vbid", vbucket);
 
     lastReceiveTime = ep_current_time();
     if (doDisconnect()) {

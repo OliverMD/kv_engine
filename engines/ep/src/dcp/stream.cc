@@ -33,6 +33,8 @@
 #include "replicationthrottle.h"
 #include "statwriter.h"
 
+#include <phosphor/phosphor.h>
+
 #include <memory>
 
 
@@ -825,6 +827,7 @@ void ActiveStream::addTakeoverStats(ADD_STAT add_stat, const void *cookie,
     }
     total += chk_items;
 
+    TRACE_INSTANT1("stats/takeoverstats", "EstimateValue", "Estimate", total);
     add_casted_stat("estimate", total, add_stat, cookie);
     add_casted_stat("chk_items", chk_items, add_stat, cookie);
     add_casted_stat("vb_items", vb_items, add_stat, cookie);
@@ -1725,6 +1728,7 @@ PassiveStream::~PassiveStream() {
 }
 
 void PassiveStream::streamRequest(uint64_t vb_uuid) {
+    TRACE_EVENT1("dcp/streamRequest", "PassiveStream::streamRequest", "vbid", vb_);
     {
         std::unique_lock<std::mutex> lh(streamMutex);
         streamRequest_UNLOCKED(vb_uuid);
